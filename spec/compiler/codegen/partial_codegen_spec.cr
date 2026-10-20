@@ -35,7 +35,9 @@ private def rebuild_partially(before : String, after : String, strict = true) : 
           changed_types = (incremental.retyped + new_instances).map(&.owner)
           compiler.codegen_again(result, after_sources, output, changed_types)
         end
-      {reason, Process.run(output, output: :pipe) { |process| process.output.gets_to_end }}
+      status, program_output = Process.run([output], output: :pipe) { |process| process.output.gets_to_end }
+      status.success?.should be_true, program_output
+      {reason, program_output}
     end
   end
 end

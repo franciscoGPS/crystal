@@ -34,7 +34,12 @@ describe Crystal::Watch::Coordination do
       File.write("main.cr", "def value\n  \"old\"\nend\nputs value\n")
       File.open("watch.log", "w") do |log|
         with_env("CRYSTAL_STRICT_SIGNATURES": nil) do
-          watcher = Process.new(compiler_executable, ["watch", "--poll", "--poll-interval", "50", "main.cr"], output: log, error: log)
+          watch_args = {% if flag?(:linux) %}
+                         ["watch", "main.cr"]
+                       {% else %}
+                         ["watch", "--poll", "--poll-interval", "50", "main.cr"]
+                       {% end %}
+          watcher = Process.new(compiler_executable, watch_args, output: log, error: log)
           begin
             first = wait_for_watch_build(Dir.current, 1)
             first.state.should eq("ok"), File.read("watch.log")
@@ -51,7 +56,7 @@ describe Crystal::Watch::Coordination do
             Process.capture("./main").should eq("42\n")
             File.read("watch.log").should contain("Full compilation:")
           ensure
-            watcher.terminate
+            watcher.terminate unless watcher.terminated?
             watcher.wait
           end
         end
