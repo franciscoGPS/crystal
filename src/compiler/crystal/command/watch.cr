@@ -128,7 +128,8 @@ class Crystal::Command
       clear_screen: clear_screen,
       debounce: debounce_ms.milliseconds,
       file_watcher: file_watcher,
-      color: @color
+      color: @color,
+      restart_options: Command.original_options
     )
 
     watcher.run
@@ -193,7 +194,7 @@ class Crystal::Command
   end
 
   private def watcher_alive?(status) : Bool
-    Process.exists?(status.pid)
+    Watch::Coordination.watcher_alive?(status)
   end
 
   private def watch_command_name : String

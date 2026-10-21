@@ -64,6 +64,66 @@ describe Crystal::Watch::Coordination do
     end
   end
 
+  {% unless flag?(:win32) %}
+    it "starts a full compilation over in a new process, keeping the build count" do
+      compiler_executable = File.expand_path(".build/crystal")
+      with_tempdir("watch_restart") do
+        File.write("main.cr", "def value\n  \"old\"\nend\nputs value\n")
+        File.open("watch.log", "w") do |log|
+          watch_args = {% if flag?(:linux) %}
+                         ["watch", "main.cr"]
+                       {% else %}
+                         ["watch", "--poll", "--poll-interval", "50", "main.cr"]
+                       {% end %}
+          watcher = Process.new(compiler_executable, watch_args, output: log, error: log)
+          begin
+            wait_for_watch_build(Dir.current, 1).state.should eq("ok"), File.read("watch.log")
+
+            # A changed return type needs a full compilation
+            File.write("main.cr", "def value\n  42\nend\nputs value\n")
+            second = wait_for_watch_build(Dir.current, 2)
+            second.state.should eq("ok"), File.read("watch.log")
+            second.pid.should eq(watcher.pid)
+            Crystal::Watch::Coordination.watcher_alive?(second).should be_true
+            Process.capture("./main").should eq("42\n")
+            File.read("watch.log").should contain("Full compilation in a new process")
+
+            # The new process keeps typing method bodies incrementally
+            File.write("main.cr", "def value\n  43\nend\nputs value\n")
+            third = wait_for_watch_build(Dir.current, 3)
+            third.state.should eq("ok"), File.read("watch.log")
+            Process.capture("./main").should eq("43\n")
+            File.read("watch.log").should contain("Typed 1 method instantiation again")
+          ensure
+            watcher.terminate unless watcher.terminated?
+            watcher.wait
+          end
+        end
+      end
+    end
+  {% end %}
+
+  it "doesn't take a reused or foreign PID for a running watcher" do
+    status = ->(pid : Int64) do
+      Crystal::Watch::Coordination::Status.new(
+        state: "ok", build: 1, request: nil, pid: pid, updated_at: Time.utc)
+    end
+
+    # A watcher in another container wrote its PID 1: here that's this process
+    Crystal::Watch::Coordination.watcher_alive?(status.call(Process.pid)).should be_false
+
+    {% if flag?(:linux) %}
+      # A live process that isn't a watcher took the PID
+      other = Process.new("sleep", ["30"])
+      begin
+        Crystal::Watch::Coordination.watcher_alive?(status.call(other.pid)).should be_false
+      ensure
+        other.terminate
+        other.wait
+      end
+    {% end %}
+  end
+
   it "holds until released" do
     with_tempfile("watch_coordination") do |root|
       Dir.mkdir_p(root)
