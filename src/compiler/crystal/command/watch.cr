@@ -128,7 +128,8 @@ class Crystal::Command
       clear_screen: clear_screen,
       debounce: debounce_ms.milliseconds,
       file_watcher: file_watcher,
-      color: @color
+      color: @color,
+      restart_options: Command.original_options
     )
 
     watcher.run

@@ -4,6 +4,12 @@ require "./inotify_watcher"
 require "./coordination"
 require "./spec_build"
 
+{% if flag?(:gnu) %}
+  lib LibMallocTrim
+    fun malloc_trim(pad : LibC::SizeT) : LibC::Int
+  end
+{% end %}
+
 module Crystal
   module Watch
     class Watcher
@@ -45,10 +51,13 @@ module Crystal
         @debounce : Time::Span = 300.milliseconds,
         @file_watcher : FileWatcher = FileWatcher.create,
         @color : Bool = true,
+        @restart_options : Array(String) = [] of String,
       )
       end
 
       def run : Nil
+        # Builds before a `restart` count too, for whoever waits on the status
+        @build = ENV.delete("CRYSTAL_WATCH_BUILD").try(&.to_i?) || 0
         setup_signal_handler
         Coordination.setup(@root)
         @request = Coordination.requested(@root)
@@ -230,6 +239,15 @@ module Crystal
         @last_state = state
         @last_errors = errors
         write_status state, message, errors
+        print_memory if ENV["CRYSTAL_WATCH_MEMORY"]? == "1"
+      end
+
+      # The GC heap against the process's resident memory: a gap between
+      # them is memory outside the GC (LLVM's, allocated with malloc).
+      private def print_memory(label : String = "build") : Nil
+        stats = GC.stats
+        rss = File.read("/proc/self/status")[/VmRSS:\s+(\d+)/, 1]?.try(&.to_i64.// 1024) if File.exists?("/proc/self/status")
+        print_status "Memory (#{label}): GC heap #{stats.heap_size // 1024**2} MB (#{stats.free_bytes // 1024**2} MB free), RSS #{rss || "?"} MB"
       end
 
       private def write_status(state : String, message : String, errors : String? = nil) : Nil
@@ -240,7 +258,16 @@ module Crystal
       end
 
       private def compile_fully(sources : Array(Compiler::Source)) : Compiler::Result
+        restart if @result && !@restart_options.empty?
+
+        # A full compilation doesn't reuse the kept program: release it
+        # first, or memory has to hold both programs. Collecting runs the
+        # finalizers that dispose its LLVM contexts, memory allocated outside
+        # the GC heap that doesn't make the GC collect by itself.
+        @result = nil
         @incremental_semantic = nil
+        release_memory "before full compilation"
+
         @compiler.keep_typed_program = true
         result = @compiler.compile_configure_program(sources, @output_filename) do |program|
           program.instantiation_records = {} of Def => Array(Program::InstantiationRecord)
@@ -249,7 +276,40 @@ module Crystal
         @result = result
 
         @incremental_semantic = IncrementalSemantic.new(result.program, IncrementalSemantic.file_sources(result.program))
+        # The LLVM contexts of this codegen are unreachable now (see above)
+        release_memory "after full compilation"
         result
+      end
+
+      # Releasing the kept program isn't enough in a large application: the
+      # GC is conservative and the typed program is one connected graph, so
+      # any stray word that looks like a pointer into it keeps all of it
+      # alive. Measured on a Lucky app: each full compilation in the same
+      # process kept a whole program (~5 GB) more. A new process compiles in
+      # the same time with none of that, so start over instead.
+      private def restart : Nil
+        {% unless flag?(:win32) || flag?(:wasm32) %}
+          print_status "Full compilation in a new process, to start with fresh memory"
+          kill_running_process
+          @file_watcher.close
+          # `exec` drops whatever is still buffered
+          STDOUT.flush
+          STDERR.flush
+          ENV["CRYSTAL_WATCH_BUILD"] = @build.to_s
+          Process.exec(Process.executable_path || PROGRAM_NAME, @restart_options)
+        {% end %}
+      end
+
+      # Collects, then has glibc return the memory LLVM freed: `free` keeps
+      # it in malloc's arenas, so the process wouldn't shrink otherwise.
+      private def release_memory(label : String) : Nil
+        print_memory "#{label}, before collecting" if ENV["CRYSTAL_WATCH_MEMORY"]? == "1"
+        GC.collect
+        print_memory "#{label}, collected" if ENV["CRYSTAL_WATCH_MEMORY"]? == "1"
+        {% if flag?(:gnu) %}
+          LibMallocTrim.malloc_trim(0)
+          print_memory "#{label}, trimmed" if ENV["CRYSTAL_WATCH_MEMORY"]? == "1"
+        {% end %}
       end
 
       # Applies the changed files to the kept program when only method bodies

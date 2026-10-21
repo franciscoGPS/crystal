@@ -71,7 +71,12 @@ class Crystal::Command
         --help, -h               show this help
     USAGE
 
+  # The command line before parsing consumes it: the watcher runs it again
+  # to start over with fresh memory (see `Watch::Watcher#restart`).
+  class_getter original_options = [] of String
+
   def self.run(options = ARGV)
+    @@original_options = options.dup
     new(options).run
   end
 
@@ -360,7 +365,8 @@ class Crystal::Command
       output_filename: Crystal.temp_executable(config.output_filename),
       run_mode: true,
       run_args: config.arguments,
-      color: @color
+      color: @color,
+      restart_options: Command.original_options
     ).run
   end
 
