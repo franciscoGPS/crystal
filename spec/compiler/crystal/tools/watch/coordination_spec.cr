@@ -84,6 +84,7 @@ describe Crystal::Watch::Coordination do
             second = wait_for_watch_build(Dir.current, 2)
             second.state.should eq("ok"), File.read("watch.log")
             second.pid.should eq(watcher.pid)
+            Crystal::Watch::Coordination.watcher_alive?(second).should be_true
             Process.capture("./main").should eq("42\n")
             File.read("watch.log").should contain("Full compilation in a new process")
 
@@ -101,6 +102,27 @@ describe Crystal::Watch::Coordination do
       end
     end
   {% end %}
+
+  it "doesn't take a reused or foreign PID for a running watcher" do
+    status = ->(pid : Int64) do
+      Crystal::Watch::Coordination::Status.new(
+        state: "ok", build: 1, request: nil, pid: pid, updated_at: Time.utc)
+    end
+
+    # A watcher in another container wrote its PID 1: here that's this process
+    Crystal::Watch::Coordination.watcher_alive?(status.call(Process.pid)).should be_false
+
+    {% if flag?(:linux) %}
+      # A live process that isn't a watcher took the PID
+      other = Process.new("sleep", ["30"])
+      begin
+        Crystal::Watch::Coordination.watcher_alive?(status.call(other.pid)).should be_false
+      ensure
+        other.terminate
+        other.wait
+      end
+    {% end %}
+  end
 
   it "holds until released" do
     with_tempfile("watch_coordination") do |root|

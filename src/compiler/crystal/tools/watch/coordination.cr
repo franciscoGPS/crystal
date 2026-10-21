@@ -176,5 +176,27 @@ module Crystal::Watch
     rescue IO::Error | JSON::ParseException
       nil
     end
+
+    # Whether the watcher that wrote *status* still runs. A process with its
+    # PID isn't enough: after the watcher stops the PID can be reused, and a
+    # watcher in a container wrote a PID of that container's namespace (often
+    # 1, which is the asking process itself in another container). Waiting on
+    # such a status never got an answer.
+    def self.watcher_alive?(status : Status) : Bool
+      return false if status.pid == Process.pid
+      return false unless Process.exists?(status.pid)
+
+      {% if flag?(:linux) %}
+        # `crystal watch` or `crystal run --watch`
+        args = begin
+          File.read("/proc/#{status.pid}/cmdline").split('\0')
+        rescue IO::Error
+          return false
+        end
+        args.includes?("watch") || args.includes?("--watch")
+      {% else %}
+        true
+      {% end %}
+    end
   end
 end

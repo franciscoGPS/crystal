@@ -194,7 +194,7 @@ class Crystal::Command
   end
 
   private def watcher_alive?(status) : Bool
-    Process.exists?(status.pid)
+    Watch::Coordination.watcher_alive?(status)
   end
 
   private def watch_command_name : String
